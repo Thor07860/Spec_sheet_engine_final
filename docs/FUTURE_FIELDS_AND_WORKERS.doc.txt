@@ -1,0 +1,166 @@
+HOW TO ADD FIELDS IN FUTURE + WORKER COUNT GUIDE
+=================================================
+
+PART A) HOW TO ADD NEW FIELDS (NO BREAKAGE)
+===========================================
+
+1) Update template schema (PRIMARY STEP)
+----------------------------------------
+File:
+- scripts/seed_database.py
+
+Where:
+- EQUIPMENT_TEMPLATES list
+- Find your equipment_sub_type
+- Add new keys inside schema_template
+
+Example:
+- Add in string_inverter schema:
+  "dc_oversizing_limit_pct": None,
+
+Rule:
+- Use stable snake_case names
+- Include unit suffix in field name when applicable:
+  - _w, _v, _a, _pct, _kg, _mm, etc.
+
+
+2) Apply template update to database
+------------------------------------
+Current seeder behavior skips existing templates if they already exist.
+So for existing subtypes, update DB template row (or add migration script).
+
+Recommended production-safe approach:
+- Add/keep an update utility script in scripts/ that updates schema_template
+  for the target equipment_sub_type.
+
+
+3) Add alias and extraction hints (recommended)
+------------------------------------------------
+File:
+- app/services/extraction/extraction_prompts.py
+
+Why:
+- Better field recall when datasheets use alternate labels
+
+Add hints:
+- In prompt guidance for subtype
+- In alias strategy if needed
+
+
+4) Ensure validator understands the new field type
+--------------------------------------------------
+File:
+- app/services/validation/validation_service.py
+
+If your new field is numeric but name pattern is unusual,
+add pattern recognition so it goes to proper validator.
+
+Example checks:
+- power field -> _validate_power
+- voltage field -> _validate_voltage
+- boolean field -> _validate_boolean
+
+
+5) Add range guard for new critical fields
+------------------------------------------
+File:
+- app/services/validation/range_validator.py
+
+Add expected realistic range under the relevant subtype map.
+This protects against hallucinated values.
+
+
+6) Optional: add cross-field logic
+----------------------------------
+File:
+- app/services/validation/cross_field_validator.py
+
+Add engineering consistency rules only if meaningful.
+
+
+7) Test with single-item request first
+--------------------------------------
+Run one known model before running full batch.
+Validate:
+- source_url quality
+- filled_fields count
+- new field value realism
+
+
+PART B) WHERE TO CHANGE WORKER COUNT
+====================================
+
+Main location:
+- app/api/routes/equipment_routes.py
+
+Current execution code:
+- ThreadPoolExecutor(max_workers=15)
+
+This is the actual worker count used in batch mode.
+
+Also update these log/description strings for consistency:
+- route description text mentioning worker count
+- logger lines that print "15 workers"
+- response field "execution_mode": "parallel (15 workers)"
+
+
+PART C) WHAT WORKER COUNT DOES
+==============================
+
+Worker count controls how many equipment items are processed concurrently in batch mode.
+
+Higher workers:
+- Pros:
+  - Faster total batch time (better throughput)
+- Cons:
+  - More CPU, memory, DB connections, network pressure
+  - Higher chance of API throttling/rate limits (Gemini/search/source hosts)
+  - More noisy failures if upstream limits are tight
+
+Lower workers:
+- Pros:
+  - More stable, lower resource pressure
+  - Better when running on small VM/laptop
+- Cons:
+  - Slower batch completion
+
+Practical recommendation:
+- Start with 10-20 workers for stable local/dev use
+- Increase gradually only if:
+  - machine resources are sufficient
+  - DB pool can handle it
+  - external APIs are not rate-limiting
+
+
+PART D) SAFE CHANGE PROCEDURE FOR WORKERS
+=========================================
+
+1) Change max_workers in equipment_routes.py
+2) Update log strings + execution_mode message
+3) Run small batch (3-5 items)
+4) Check:
+   - failure rate
+   - token usage
+   - total time
+   - API throttling warnings
+5) Then run full batch
+
+
+PART E) QUICK CHECKLIST BEFORE DEPLOY
+=====================================
+
+For new field additions:
+- Template updated
+- DB template row updated
+- Prompt hints/aliases updated
+- Validator mapping/range updated
+- Single-item tested
+- Batch tested
+
+For worker changes:
+- max_workers changed
+- Logs and response text updated
+- Load test completed
+
+
+END OF DOCUMENT

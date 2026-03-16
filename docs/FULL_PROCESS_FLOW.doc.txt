@@ -1,0 +1,191 @@
+SPEC ENGINE - FULL PROCESS FLOW (DETAILED)
+==========================================
+
+1) REQUEST ENTRY
+---------------
+Main endpoint:
+- app/api/routes/equipment_routes.py
+- POST /equipment/
+
+Modes:
+- Single mode: one equipment request
+- Batch mode: list of equipment requests (parallel workers)
+
+Input fields per item:
+- manufacturer
+- model
+- equipment_type
+- equipment_sub_type
+
+
+2) ROUTE LAYER (HTTP ONLY)
+--------------------------
+File:
+- app/api/routes/equipment_routes.py
+
+What it does:
+- Detects single or batch payload
+- Spawns worker threads for batch mode
+- Creates thread-local DB session for each worker
+- Calls EquipmentService.get_equipment_specs(...)
+- Aggregates results and batch metrics
+
+What it should NOT do:
+- No extraction business logic
+- No parsing/validation logic
+
+
+3) ORCHESTRATOR SERVICE
+-----------------------
+File:
+- app/services/equipment_service.py
+
+Main method:
+- get_equipment_specs(manufacturer, model, equipment_type, equipment_sub_type)
+
+Execution order:
+A) Cache lookup (Redis)
+   - If found and not stale -> return immediately
+
+B) DB lookup
+   - If found and not stale -> return immediately
+   - If stale/suspicious -> force fresh extraction
+
+C) Create extraction job row
+
+D) Load template schema by equipment_sub_type
+   - app/repositories/template_repository.py
+   - fallback fuzzy template match if exact type not found
+
+E) Source discovery via SerperService
+   - app/services/serper_service.py
+   - saves candidates to equipment_sources table
+   - chooses best source URL (official/manufacturer PDF prioritized)
+   - IronRidge special handling probes official files.ironridge.com cut sheets first
+
+F) Fetch source document
+   - Prefer PDF bytes
+   - fallback webpage text extraction
+
+G) Optional model matching (if text context available)
+
+H) Run 4-pass extraction pipeline
+   - app/services/extraction/extraction_service.py
+
+I) Validate cleaned output
+   - app/services/validation/validation_service.py
+
+J) Save equipment row
+   - create new or update stale existing record
+
+K) Cache final serialized response
+
+
+4) EXTRACTION PIPELINE (4 PASS)
+--------------------------------
+File:
+- app/services/extraction/extraction_service.py
+
+PASS 1: PDF TABLE EXTRACTION
+- Uses Gemini on PDF bytes
+- Extracts table values for template fields
+
+PASS 2: MISSING FIELD RESEARCH (GROUNDED)
+- Builds missing-field prompt
+- Uses grounded search first (web retrieval)
+- If grounded returns none, falls back to regular Gemini call
+- Every candidate value goes through:
+  - sanity check (truncation/obvious wrong values)
+  - subtype range validation gate
+
+PASS 3: INTELLIGENT FILLING
+- Uses already-found fields as anchors
+- Requests missing fields (now all missing, not truncated)
+- Inferred values still pass subtype range validator gate
+
+PASS 4: CROSS-VALIDATION
+- Cross-validates against trusted source context and range realism
+- Applies confidence adjustment
+
+Final step:
+- Fill unresolved fields with "Not available"
+- Return extracted dict + token/latency metrics
+
+
+5) VALIDATION LAYER
+-------------------
+Main files:
+- app/services/validation/validation_service.py
+- app/services/validation/range_validator.py
+- app/services/validation/cross_field_validator.py
+- app/services/validation/cross_validation_service.py
+
+Validation responsibilities:
+- Type normalization (power, voltage, current, percentages, booleans)
+- Range guards by equipment subtype
+- Cross-field physics/consistency checks
+- Coverage/confidence scoring
+
+Why this exists:
+- Prevent hallucinated values from being saved
+- Keep only realistic values even after aggressive LLM search
+
+
+6) DATA STORAGE
+---------------
+Tables used in flow:
+- equipment
+- equipment_templates
+- trusted_sources
+- equipment_sources
+- equipment_extraction_jobs
+
+Key repositories:
+- app/repositories/equipment_repository.py
+- app/repositories/template_repository.py
+- app/repositories/source_repository.py
+- app/repositories/job_repository.py
+
+
+7) SOURCE QUALITY STRATEGY
+--------------------------
+File:
+- app/services/serper_service.py
+
+Priority logic:
+- Official manufacturer PDFs first
+- Trusted repository/distributor PDFs next
+- Web pages last
+- Marketing/product pages filtered when possible
+- Special boosts for official domains (example: files.ironridge.com)
+
+
+8) BATCH EXECUTION FLOW
+-----------------------
+File:
+- app/api/routes/equipment_routes.py
+
+- Uses ThreadPoolExecutor
+- Each worker processes one equipment item end-to-end
+- Aggregates successful/failed counts + token usage + elapsed times
+
+
+9) ERROR HANDLING FLOW
+----------------------
+- Any extraction exception marks job as FAILED
+- API still returns structured error payload per item
+- Batch mode isolates failures (one item failure does not crash others)
+
+
+10) PRACTICAL DEBUG CHECKLIST
+-----------------------------
+When output quality drops:
+1. Verify selected source_url quality (official PDF vs product page)
+2. Check template fields for subtype correctness
+3. Check PASS 2 logs for grounded fallback usage and rejection reasons
+4. Check range validator thresholds for overly strict blocks
+5. Verify model normalization/matching is not collapsing specific model names
+6. Re-run single-item request before batch to isolate behavior
+
+
+END OF DOCUMENT

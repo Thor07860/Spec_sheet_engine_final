@@ -1,0 +1,70 @@
+services:
+  # ==============================================================================
+  # PostgreSQL Database Service
+  # ==============================================================================
+  - type: pserv
+    name: specsheet-engine-db
+    plan: standard
+    ipAllowList: []
+    databases:
+      - name: specsheet_engine
+        user: seuser
+        postgresMajorVersion: 15
+    
+  # ==============================================================================
+  # Redis Cache Service
+  # ==============================================================================
+  - type: redis
+    name: specsheet-engine-redis
+    plan: starter
+    ipAllowList: []
+    
+  # ==============================================================================
+  # Main Web Service (FastAPI Application)
+  # ==============================================================================
+  - type: web
+    name: specsheet-engine-api
+    plan: standard
+    runtime: python
+    pythonVersion: "3.11"
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app.main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT}
+    envVars:
+      - key: DEBUG
+        value: "false"
+      - key: APP_NAME
+        value: "Solar Equipment Intelligence Engine"
+      - key: APP_VERSION
+        value: "1.0.0"
+      - key: DEPLOY_ENV
+        value: "production"
+      - key: GEMINI_TEMPERATURE
+        value: "0.0"
+      - key: GEMINI_MAX_TOKENS
+        value: "4096"
+      - key: ENABLE_SERPER_SOURCE_SEARCH
+        value: "true"
+      - key: ENABLE_GROUNDED_WEB_FALLBACK
+        value: "true"
+      # ============================================================
+      # THESE MUST BE SET MANUALLY IN RENDER DASHBOARD:
+      # ============================================================
+      # DATABASE_URL (auto-connects to specsheet-engine-db)
+      # REDIS_URL (auto-connects to specsheet-engine-redis)
+      # GEMINI_API_KEY (secret from environment)
+      # SERPER_API_KEY (secret from environment)
+      # AWS_ACCESS_KEY_ID (secret from environment)
+      # AWS_SECRET_ACCESS_KEY (secret from environment)
+      # AWS_S3_ENDPOINT (your S3 endpoint)
+      # AWS_S3_BUCKET (your bucket name)
+    healthCheckPath: /health
+    healthCheckInterval: 300
+    disk:
+      name: specsheet-engine-disk
+      sizeGb: 1
+    preDeployCommand: |
+      echo "Running pre-deployment checks..."
+      python -c "from app.core.config import settings; print('Config loaded successfully')"
+      echo "Creating database tables..."
+      python -c "from app.core.database import create_tables; from app.core.config import settings; create_tables()"
+      echo "Pre-deployment checks complete!"
