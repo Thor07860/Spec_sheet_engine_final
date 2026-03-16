@@ -639,14 +639,7 @@ class EquipmentService:
         else:
             cleaned_specs = specs
 
-        # Only include source_document if at least one URL exists
-        source_doc = None
-        if equipment.original_source_url or equipment.source_url:
-            source_doc = {
-                "original_url": equipment.original_source_url,
-                "processed_url": equipment.source_url
-            }
-
+        # Always include source_document with both URLs
         result = {
             "id": str(equipment.id),
             "label": equipment.label,
@@ -656,14 +649,14 @@ class EquipmentService:
             "manufacturer": equipment.manufacturer,
             "model": equipment.model,
             "specifications": cleaned_specs,
+            "source_document": {
+                "original_url": equipment.original_source_url,  # URL we found the PDF at
+                "processed_url": equipment.source_url  # S3 bucket URL where cached
+            },
             "confidence": {
                 "score": equipment.confident_score
             }
         }
-        
-        # Only add source_document if it has content
-        if source_doc:
-            result["source_document"] = source_doc
         
         return result
 
